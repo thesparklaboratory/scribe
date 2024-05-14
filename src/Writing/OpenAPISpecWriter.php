@@ -357,6 +357,8 @@ class OpenAPISpecWriter
                                 'type' => 'array',
                                 'items' => [
                                     'type' => 'object', // No better idea what to put here
+                                    'properties' => [],
+                                    'additionalProperties' => true,
                                 ],
                                 'example' => $decoded,
                             ],
@@ -378,9 +380,45 @@ class OpenAPISpecWriter
                 ];
 
             case 'object':
-                $properties = collect($decoded)->mapWithKeys(function ($value, $key) use ($endpoint) {
+                $collection = collect($decoded);
+                $keys = $collection->keys();
+                $allNumeric = $keys->every(fn($key) => is_numeric($key));
+                
+                $properties = $collection->mapWithKeys(function ($value, $key) use ($endpoint) {
                     return [$key => $this->generateSchemaForValue($value, $endpoint, $key)];
                 })->toArray();
+
+                if ($allNumeric) {
+                    // If all keys are numeric, we treat it as an array
+                    if (!count($decoded)) {
+                        // empty array
+                        return [
+                            'application/json' => [
+                                'schema' => [
+                                    'type' => 'array',
+                                    'items' => [
+                                        'type' => 'object', // No better idea what to put here
+                                        'properties' => [],
+                                        'additionalProperties' => true,
+                                    ],
+                                    'example' => $decoded,
+                                ],
+                            ],
+                        ];
+                    }
+
+                    return [
+                        'application/json' => [
+                            'schema' => [
+                                'type' => 'array',
+                                'items' => [
+                                    'type' => $this->convertScribeOrPHPTypeToOpenAPIType(gettype($decoded[0])),
+                                ],
+                                'example' => $decoded,
+                            ],
+                        ],
+                    ];
+                }
 
                 return [
                     'application/json' => [
@@ -452,13 +490,15 @@ class OpenAPISpecWriter
      */
     public function generateFieldData($field): array
     {
+        $schema = [];
+
         if (is_array($field)) {
             $field = new Parameter($field);
         }
 
         if ($field->type === 'file') {
             // See https://swagger.io/docs/specification/describing-request-body/file-upload/
-            return [
+            $schema = [
                 'type' => 'string',
                 'format' => 'binary',
                 'description' => $field->description ?: '',
@@ -503,9 +543,9 @@ class OpenAPISpecWriter
                 }
             }
 
-            return $fieldData;
+            $schema = $fieldData;
         } else if ($field->type === 'object') {
-            return [
+            $schema = [
                 'type' => 'object',
                 'description' => $field->description ?: '',
                 'example' => $field->example,
@@ -522,9 +562,13 @@ class OpenAPISpecWriter
             if (!empty($field->enumValues)) {
                 $schema['enum'] = $field->enumValues;
             }
-
-            return $schema;
         }
+
+        if ($schema['type'] === 'array' && empty($schema['items']['type'])) {
+            $schema['items'] = ['type' => 'object', 'properties' => [], 'additionalProperties' => true];
+        }
+
+        return $schema;
     }
 
     protected function operationId(OutputEndpointData $endpoint): string
@@ -560,32 +604,39 @@ class OpenAPISpecWriter
                 $properties[$subField] = $this->generateSchemaForValue($subValue, $endpoint, $subFieldPath);
             }
 
-            return [
+            $schema = [
                 'type' => 'object',
                 'properties' => $this->objectIfEmpty($properties),
             ];
-        }
+        } else {
 
-        $schema = [
-            'type' => $this->convertScribeOrPHPTypeToOpenAPIType(gettype($value)),
-            'example' => $value,
-        ];
-        if (isset($endpoint->responseFields[$path]->description)) {
-            $schema['description'] = $endpoint->responseFields[$path]->description;
-        }
-
-        if ($schema['type'] === 'array' && !empty($value)) {
-            $schema['example'] = json_decode(json_encode($schema['example']), true); // Convert stdClass to array
-
-            $sample = $value[0];
-            $typeOfEachItem = $this->convertScribeOrPHPTypeToOpenAPIType(gettype($sample));
-            $schema['items']['type'] = $typeOfEachItem;
-
-            if ($typeOfEachItem === 'object') {
-                $schema['items']['properties'] = collect($sample)->mapWithKeys(function ($v, $k) use ($endpoint, $path) {
-                    return [$k => $this->generateSchemaForValue($v, $endpoint, "$path.$k")];
-                })->toArray();
+            $schema = [
+                'type' => $this->convertScribeOrPHPTypeToOpenAPIType(gettype($value)),
+                'example' => $value,
+            ];
+            if (isset($endpoint->responseFields[$path]->description)) {
+                $schema['description'] = $endpoint->responseFields[$path]->description;
             }
+
+            if ($schema['type'] === 'array' && !empty($value)) {
+                $schema['example'] = json_decode(json_encode($schema['example']), true); // Convert stdClass to array
+
+                $sample = $value[0];
+                $typeOfEachItem = $this->convertScribeOrPHPTypeToOpenAPIType(gettype($sample));
+                $schema['items']['type'] = $typeOfEachItem;
+
+                if ($typeOfEachItem === 'object') {
+                    $schema['items']['properties'] = collect($sample)->mapWithKeys(function ($v, $k) use ($endpoint, $path) {
+                        return [$k => $this->generateSchemaForValue($v, $endpoint, "$path.$k")];
+                    })->toArray();
+                }
+            } else if ($schema['type'] === 'array') {
+                $schema['items'] = ['type' => 'object', 'properties' => [], 'additionalProperties' => true];
+            }
+        }
+
+        if ($schema['type'] === 'array' && empty($schema['items']['type'])) {
+            $schema['items'] = ['type' => 'object', 'properties' => [], 'additionalProperties' => true];
         }
 
         return $schema;
