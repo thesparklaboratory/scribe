@@ -388,25 +388,7 @@ class OpenAPISpecWriter
                     return [$key => $this->generateSchemaForValue($value, $endpoint, $key)];
                 })->toArray();
 
-                if ($allNumeric) {
-                    // If all keys are numeric, we treat it as an array
-                    if (!count($decoded)) {
-                        // empty array
-                        return [
-                            'application/json' => [
-                                'schema' => [
-                                    'type' => 'array',
-                                    'items' => [
-                                        'type' => 'object', // No better idea what to put here
-                                        'properties' => [],
-                                        'additionalProperties' => true,
-                                    ],
-                                    'example' => $decoded,
-                                ],
-                            ],
-                        ];
-                    }
-
+                if ($allNumeric && $keys->first() === '0') {
                     return [
                         'application/json' => [
                             'schema' => [
