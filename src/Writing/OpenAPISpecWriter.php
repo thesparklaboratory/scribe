@@ -547,7 +547,7 @@ class OpenAPISpecWriter
         }
 
         if ($schema['type'] === 'array' && empty($schema['items']['type'])) {
-            $schema['items'] = ['type' => 'object', 'properties' => [], 'additionalProperties' => true];
+            $schema['items'] = ['type' => 'object', 'properties' => new \stdClass(), 'additionalProperties' => true];
         }
 
         return $schema;
@@ -613,12 +613,12 @@ class OpenAPISpecWriter
                     })->toArray();
                 }
             } else if ($schema['type'] === 'array') {
-                $schema['items'] = ['type' => 'object', 'properties' => [], 'additionalProperties' => true];
+                $schema['items'] = ['type' => 'object', 'properties' => new \stdClass(), 'additionalProperties' => true];
             }
         }
 
         if ($schema['type'] === 'array' && empty($schema['items']['type'])) {
-            $schema['items'] = ['type' => 'object', 'properties' => [], 'additionalProperties' => true];
+            $schema['items'] = ['type' => 'object', 'properties' => new \stdClass(), 'additionalProperties' => true];
         }
 
         return $schema;
