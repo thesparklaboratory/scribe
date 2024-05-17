@@ -66,6 +66,10 @@ class OpenAPISpecWriter
     protected function generatePathsSpec(array $groupedEndpoints)
     {
         $allEndpoints = collect($groupedEndpoints)->map->endpoints->flatten(1);
+        // @TODO remove debug statement
+        // $allEndpoints = $allEndpoints->filter(function (OutputEndpointData $endpoint) {
+        //     return $endpoint->uri === 'api/user/acl/group/{group_id}/devices';
+        // });
         // OpenAPI groups endpoints by path, then method
         $groupedByPath = $allEndpoints->groupBy(function ($endpoint) {
             $path = str_replace("?}", "}", $endpoint->uri); // Remove optional parameters indicator in path
@@ -322,7 +326,7 @@ class OpenAPISpecWriter
             ];
         }
 
-        $decoded = json_decode($responseContent);
+        $decoded = json_decode($responseContent, true);
         if ($decoded === null) { // Decoding failed, so we return the content string as is
             return [
                 'text/plain' => [
@@ -334,7 +338,13 @@ class OpenAPISpecWriter
             ];
         }
 
-        switch ($type = gettype($decoded)) {
+        $type = gettype($decoded);
+        if ($type === 'array' || $type === 'object') {
+            $arr = is_array($decoded) ? $decoded : (array) $decoded;
+            $type = $this->isArray((array) $decoded) ? 'array' : 'object';
+        }
+
+        switch ($type) {
             case 'string':
             case 'boolean':
             case 'integer':
@@ -357,8 +367,51 @@ class OpenAPISpecWriter
                                 'type' => 'array',
                                 'items' => [
                                     'type' => 'object', // No better idea what to put here
-                                    'properties' => [],
+                                    'properties' => new \stdClass(),
                                     'additionalProperties' => true,
+                                ],
+                                'example' => $decoded,
+                            ],
+                        ],
+                    ];
+                }
+
+                $typeOfEachItem = gettype($decoded[0]);
+                if ($typeOfEachItem === 'object' || $typeOfEachItem === 'array') {
+                    if ($this->isArray($decoded[0])) {
+                        $typeOfEachItem = 'array';
+                    } else {
+                        $typeOfEachItem = 'object';
+                    }
+                }
+
+                if ($typeOfEachItem === 'object') {
+                    $properties = collect($decoded[0])->mapWithKeys(function ($value, $key) use ($endpoint) {
+                        return [$key => $this->generateSchemaForValue($value, $endpoint, $key)];
+                    })->toArray();
+
+                    return [
+                        'application/json' => [
+                            'schema' => [
+                                'type' => 'array',
+                                'items' => [
+                                    'type' => 'object',
+                                    'properties' => $this->objectIfEmpty($properties),
+                                ],
+                                'example' => $decoded,
+                            ],
+                        ],
+                    ];
+                }
+
+                if ($typeOfEachItem === 'array') {
+                    return [
+                        'application/json' => [
+                            'schema' => [
+                                'type' => 'array',
+                                'items' => [
+                                    'type' => 'array',
+                                    'items' => $this->generateSchemaForValue($decoded[0]),
                                 ],
                                 'example' => $decoded,
                             ],
@@ -372,7 +425,7 @@ class OpenAPISpecWriter
                         'schema' => [
                             'type' => 'array',
                             'items' => [
-                                'type' => $this->convertScribeOrPHPTypeToOpenAPIType(gettype($decoded[0])),
+                                'type' => $this->convertScribeOrPHPTypeToOpenAPIType($typeOfEachItem),
                             ],
                             'example' => $decoded,
                         ],
@@ -381,26 +434,9 @@ class OpenAPISpecWriter
 
             case 'object':
                 $collection = collect($decoded);
-                $keys = $collection->keys();
-                $allNumeric = $keys->every(fn($key) => is_numeric($key));
-                
                 $properties = $collection->mapWithKeys(function ($value, $key) use ($endpoint) {
                     return [$key => $this->generateSchemaForValue($value, $endpoint, $key)];
                 })->toArray();
-
-                if ($allNumeric && $keys->first() === '0') {
-                    return [
-                        'application/json' => [
-                            'schema' => [
-                                'type' => 'array',
-                                'items' => [
-                                    'type' => $this->convertScribeOrPHPTypeToOpenAPIType(gettype($decoded[0])),
-                                ],
-                                'example' => $decoded,
-                            ],
-                        ],
-                    ];
-                }
 
                 return [
                     'application/json' => [
@@ -508,6 +544,7 @@ class OpenAPISpecWriter
                     ])
                     : $baseItem,
             ];
+
             if (str_replace('[]', "", $field->type) === 'file') {
                 // Don't include example for file params in OAS; it's hard to translate it correctly
                 unset($fieldData['example']);
@@ -547,7 +584,9 @@ class OpenAPISpecWriter
         }
 
         if ($schema['type'] === 'array' && empty($schema['items']['type'])) {
-            $schema['items'] = ['type' => 'object', 'properties' => new \stdClass(), 'additionalProperties' => true];
+            $schema['items']['type'] = 'object';
+            $schema['items']['properties'] = new \stdClass();
+            $schema['items']['additionalProperties'] = true;
         }
 
         return $schema;
@@ -570,6 +609,17 @@ class OpenAPISpecWriter
         return count($field) > 0 ? $field : new \stdClass();
     }
 
+    protected function isArray(array $value): bool
+    {
+        $arr = $value;
+        if (is_object($value)) {
+            $collection = collect($value);
+            $arr = $collection->toArray();
+        }
+
+        return array_diff(array_keys($arr), range(0, count($arr) - 1)) === [];
+    }
+
     /**
      * Given a value, generate the schema for it. The schema consists of: {type:, example:, properties: (if value is an
      * object)}, and possibly a description for each property. The $endpoint and $path are used for looking up response
@@ -577,8 +627,9 @@ class OpenAPISpecWriter
      */
     public function generateSchemaForValue(mixed $value, OutputEndpointData $endpoint, string $path): array
     {
-        if ($value instanceof \stdClass) {
-            $value = (array)$value;
+        if ($value instanceof \stdClass || (is_array($value) && !$this->isArray($value))) {
+
+            $value = !is_array($value) ? (array) $value : $value;
             $properties = [];
             // Recurse into the object
             foreach ($value as $subField => $subValue) {
@@ -591,7 +642,6 @@ class OpenAPISpecWriter
                 'properties' => $this->objectIfEmpty($properties),
             ];
         } else {
-
             $schema = [
                 'type' => $this->convertScribeOrPHPTypeToOpenAPIType(gettype($value)),
                 'example' => $value,
@@ -601,11 +651,15 @@ class OpenAPISpecWriter
             }
 
             if ($schema['type'] === 'array' && !empty($value)) {
-                $schema['example'] = json_decode(json_encode($schema['example']), true); // Convert stdClass to array
+                $schema['example'] = json_decode(json_encode($schema['example']), true);
+                $schema['example'] = array_slice($schema['example'], 0, 1);
 
                 $sample = $value[0];
-                $typeOfEachItem = $this->convertScribeOrPHPTypeToOpenAPIType(gettype($sample));
-                $schema['items']['type'] = $typeOfEachItem;
+                $typeOfEachItem = gettype($sample);
+                if ($typeOfEachItem === 'object' || $typeOfEachItem === 'array') {
+                    $typeOfEachItem = $this->isArray($sample) ? 'array' : 'object';
+                }
+                $schema['items']['type'] = $this->convertScribeOrPHPTypeToOpenAPIType($typeOfEachItem);
 
                 if ($typeOfEachItem === 'object') {
                     $schema['items']['properties'] = collect($sample)->mapWithKeys(function ($v, $k) use ($endpoint, $path) {
@@ -613,12 +667,32 @@ class OpenAPISpecWriter
                     })->toArray();
                 }
             } else if ($schema['type'] === 'array') {
-                $schema['items'] = ['type' => 'object', 'properties' => new \stdClass(), 'additionalProperties' => true];
+                $schema['items']['type'] = 'object';
+                $schema['items']['properties'] = new \stdClass();
+                $schema['items']['additionalProperties'] = true;
             }
         }
 
         if ($schema['type'] === 'array' && empty($schema['items']['type'])) {
-            $schema['items'] = ['type' => 'object', 'properties' => new \stdClass(), 'additionalProperties' => true];
+            if (!empty($value)) {
+                $sample = $this->isArray($value) ? $value[0] : $value;
+            } else {
+                $sample = new \stdClass();
+            }
+            $typeOfEachItem = gettype($sample);
+            if ($typeOfEachItem === 'object' || $typeOfEachItem === 'array') {
+                if ($this->isArray($sample)) {
+                    $typeOfEachItem = 'array';
+                } else {
+                    $typeOfEachItem = 'object';
+                }
+            }
+
+            $schema['items']['type'] = $this->convertScribeOrPHPTypeToOpenAPIType($typeOfEachItem);
+            if ($typeOfEachItem === 'object') {
+                $schema['items']['properties'] = $this->objectIfEmpty($schema['items']['properties']);
+                $schema['items']['additionalProperties'] = true;
+            }
         }
 
         return $schema;
