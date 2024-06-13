@@ -50,9 +50,11 @@ trait InstantiatesExampleModels
         foreach ($configuredStrategies as $strategyName) {
             try {
                 $model = $strategies[$strategyName]();
-                if ($model) return $model;
+                if ($model) {
+                    return $model;
+                }
             } catch (Throwable $e) {
-                c::warn("Couldn't get example model for {$type} via $strategyName.");
+                c::warn("Couldn't get example model for {$type} via $strategyName.: " . $e->getMessage());
                 e::dumpExceptionIfVerbose($e, true);
             }
         }
@@ -92,7 +94,36 @@ trait InstantiatesExampleModels
      */
     protected function getExampleModelFromDatabaseFirst(string $type, array $relations = [])
     {
-        return $type::with($relations)->first();
+        $with = [];
+        foreach ($relations as $relationName) {
+            if (empty($relationName)) continue;
+            $relationChain = explode('.', $relationName);
+            $relationVector = array_shift($relationChain);
+
+            $relationRefs = rel(new $type);
+            if (isset($relationRefs->hasOne) && !empty($relationRefs->hasOne[$relationVector])) {
+                $relationModel = $this->getExampleModelFromDatabaseFirst($relationRefs->hasOne[$relationVector], [implode('.', $relationChain)]);
+                if ($relationModel) {
+                    $with[$relationName] = fn() => $relationModel;
+                } else {
+                    c::warn("Couldn't create $relationVector in $type.");
+                }
+            } else {
+                $available = get_object_vars($relationRefs);
+                $found = false;
+                foreach ($available as $relationType => $relationClasses) {
+                    if (isset($relationClasses[$relationVector])) {
+                        $with[] = $relationName;
+                        $found = true;
+                    }
+                }
+                if (!$found) {
+                    c::warn("Couldn't find relation $relationVector in $type. Available relations: " . json_encode($available));
+                }
+            }
+        }
+        
+        return $type::with($with)->first();
     }
 
 }

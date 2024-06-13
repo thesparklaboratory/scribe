@@ -6,6 +6,7 @@ use Closure;
 use DirectoryIterator;
 use Exception;
 use FastRoute\RouteParser\Std;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Routing\Route;
@@ -308,6 +309,10 @@ class Utils
                     $factory = $factory->hasAttached($factoryChain, $pivot, $relationVector);
                 } else if ($relationType === BelongsTo::class) {
                     $factory = $factory->for($factoryChain, $relationVector);
+                } else if ($relationType === HasOne::class) {
+                    $factory = $factory->afterCreating($factoryChain, function ($model) use ($relationVector) {
+                        $model->{$relationVector}()->save(factory($model->{$relationVector}()->getRelated())->make());
+                    });
                 } else {
                     $factory = $factory->has($factoryChain, $relationVector);
                 }

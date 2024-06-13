@@ -337,7 +337,7 @@ class PostmanCollectionWriter
             return [
                 'id' => $name,
                 'key' => $name,
-                'value' => urlencode($parameter->example),
+                'value' => $parameter->example ? urlencode($parameter->example) : '',
                 'description' => $parameter->description,
             ];
         })->values()->toArray();

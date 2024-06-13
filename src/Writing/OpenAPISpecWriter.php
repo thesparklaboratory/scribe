@@ -68,7 +68,7 @@ class OpenAPISpecWriter
         $allEndpoints = collect($groupedEndpoints)->map->endpoints->flatten(1);
         // @TODO remove debug statement
         // $allEndpoints = $allEndpoints->filter(function (OutputEndpointData $endpoint) {
-        //     return $endpoint->uri === 'api/user/acl/group/{group_id}/devices';
+        //     return $endpoint->uri === 'api/user/events/{id}';
         // });
         // OpenAPI groups endpoints by path, then method
         $groupedByPath = $allEndpoints->groupBy(function ($endpoint) {
@@ -435,7 +435,7 @@ class OpenAPISpecWriter
             case 'object':
                 $collection = collect($decoded);
                 $properties = $collection->mapWithKeys(function ($value, $key) use ($endpoint) {
-                    return [$key => $this->generateSchemaForValue($value, $endpoint, $key)];
+                    return [$key => $this->generateSchemaForValue($value, $endpoint, $key, true)];
                 })->toArray();
 
                 return [
@@ -625,7 +625,7 @@ class OpenAPISpecWriter
      * object)}, and possibly a description for each property. The $endpoint and $path are used for looking up response
      * field descriptions.
      */
-    public function generateSchemaForValue(mixed $value, OutputEndpointData $endpoint, string $path): array
+    public function generateSchemaForValue(mixed $value, OutputEndpointData $endpoint, string $path, bool $generateExample = true): array
     {
         if ($value instanceof \stdClass || (is_array($value) && !$this->isArray($value))) {
 
@@ -634,7 +634,7 @@ class OpenAPISpecWriter
             // Recurse into the object
             foreach ($value as $subField => $subValue) {
                 $subFieldPath = sprintf('%s.%s', $path, $subField);
-                $properties[$subField] = $this->generateSchemaForValue($subValue, $endpoint, $subFieldPath);
+                $properties[$subField] = $this->generateSchemaForValue($subValue, $endpoint, $subFieldPath, false);
             }
 
             $schema = [
@@ -644,15 +644,19 @@ class OpenAPISpecWriter
         } else {
             $schema = [
                 'type' => $this->convertScribeOrPHPTypeToOpenAPIType(gettype($value)),
-                'example' => $value,
             ];
+            if ($generateExample) {
+                $schema['example'] = $value;
+            }
             if (isset($endpoint->responseFields[$path]->description)) {
                 $schema['description'] = $endpoint->responseFields[$path]->description;
             }
 
             if ($schema['type'] === 'array' && !empty($value)) {
-                $schema['example'] = json_decode(json_encode($schema['example']), true);
-                $schema['example'] = array_slice($schema['example'], 0, 1);
+                if ($generateExample) {
+                    $schema['example'] = json_decode(json_encode($schema['example']), true);
+                    $schema['example'] = array_slice($schema['example'], 0, 1);
+                }
 
                 $sample = $value[0];
                 $typeOfEachItem = gettype($sample);
@@ -663,7 +667,7 @@ class OpenAPISpecWriter
 
                 if ($typeOfEachItem === 'object') {
                     $schema['items']['properties'] = collect($sample)->mapWithKeys(function ($v, $k) use ($endpoint, $path) {
-                        return [$k => $this->generateSchemaForValue($v, $endpoint, "$path.$k")];
+                        return [$k => $this->generateSchemaForValue($v, $endpoint, "$path.$k", false)];
                     })->toArray();
                 }
             } else if ($schema['type'] === 'array') {
